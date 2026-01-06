@@ -48,17 +48,17 @@ new Elysia()
 		// email_regex: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
 		// min_password_length: 12,
 		// password_reset_expiry_minutes: 15,
-		// auth_bypass_routes: ["/v1/fixed/auth/login", "/v1/fixed/auth/register"],
-		// rate_limit: {
-		// 	window_seconds: 60,
-		// 	max_requests: 100,
-		// 	auth_max_requests: 5,
-		// 	auth_routes: [
-		// 		"/v1/fixed/auth/login",
-		// 		"/v1/fixed/auth/register",
-		// 		"/v1/fixed/auth/change-password",
-		// 	],
-		// },
+		auth_bypass_routes: ["/v1/fixed/auth/login", "/v1/fixed/auth/register"],
+		rate_limit: {
+			window_seconds: 60,
+			max_requests: 100,
+			auth_max_requests: 5,
+			auth_routes: [
+				"/v1/fixed/auth/login",
+				"/v1/fixed/auth/register",
+				"/v1/fixed/auth/change-password",
+			],
+		},
 	})
 	.onStart(async ({ store }) => {
 		const config = store.postgres;
@@ -78,7 +78,7 @@ new Elysia()
 		const redisResult = await redisManager.exists("healthcheck");
 		console.log("Redis connection test:", redisResult);
 	})
-	.onRequest(async ({ request, store }) => {
+	.onRequest(async ({ request, store, set }) => {
 		const url = new URL(request.url);
 		const pathname = url.pathname;
 		const method = request.method;
@@ -91,6 +91,7 @@ new Elysia()
 			"unknown";
 		const userAgent = request.headers.get("user-agent") || "unknown";
 
+		//#region Audit Log
 		const auditLog = {
 			timestamp: new Date().toISOString(),
 			pathname,
@@ -109,6 +110,51 @@ new Elysia()
 		if (store.environment === "development") {
 			console.log("Audit log:", auditLog);
 		}
+		//#endregion
+
+		//#region Rate Limit
+		if (store.auth_bypass_routes.includes(pathname)) {
+			return;
+		}
+		const isAuthRoute = store.rate_limit.auth_routes.some((route) =>
+			pathname.includes(route),
+		);
+		const rateLimitKey = isAuthRoute
+			? `rateLimit:auth:${clientIp}`
+			: `rateLimit:global:${clientIp}`;
+		const maxRequests = isAuthRoute
+			? store.rate_limit.auth_max_requests
+			: store.rate_limit.max_requests;
+
+		const currentCount = await redis.read<number>(rateLimitKey);
+		const count =
+			currentCount.success && currentCount.data ? currentCount.data : 0;
+
+		if (count >= maxRequests) {
+			set.status = 429;
+			set.headers["Retry-After"] = String(store.rate_limit.window_seconds);
+			return {
+				error: "Rate limit exceeded",
+				retryAfter: store.rate_limit.window_seconds,
+				success: false,
+				code: 429,
+			};
+		}
+
+		if (count === 0) {
+			await redis.create(rateLimitKey, 1);
+			await redis.acquireLock(
+				`${rateLimitKey}:ttl`,
+				store.rate_limit.window_seconds,
+			);
+		} else {
+			await redis.update(rateLimitKey, count + 1);
+		}
+		set.headers["X-RateLimit-Limit"] = String(maxRequests);
+		set.headers["X-RateLimit-Remaining"] = String(
+			Math.max(0, maxRequests - count - 1),
+		);
+		//#endregion
 	})
 	.get("/redis/test", async ({ store }) => {
 		const redisManager = new RedisManager();
