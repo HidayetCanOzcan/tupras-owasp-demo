@@ -1,15 +1,20 @@
-import { Elysia } from "elysia";
-import { PostgreSQLManager, RedisManager } from "./Managers";
+import { randomUUID } from "node:crypto";
+import { Elysia, t } from "elysia";
 import {
 	CREATE_AUTH_USER,
 	CREATE_DEMO_PG_TEST_TABLE,
 	CREATE_PASSWORD_RESET_TOKENS,
 	DELETE_DEMO_PG_TEST_TABLE,
 	INSERT_DEMO_PG_TEST_TABLE,
+	INSERT_USER,
 	SELECT_DEMO_PG_TEST_TABLE,
 	UPDATE_DEMO_PG_TEST_TABLE,
 } from "./constants";
-import { randomUUID } from "node:crypto";
+import { PostgreSQLManager, RedisManager } from "./Managers";
+import type { ApiResponse } from "./types";
+import type { DbUserRow, SanitizedUser } from "./Service/UserService/types";
+import { findUserByEmail, sanitizeUser } from "./Service/UserService";
+import { generatePasswordHash } from "./Service/AuthService";
 
 new Elysia()
 	.state({
@@ -45,8 +50,8 @@ new Elysia()
 		// 	path: "/",
 		// },
 		environment: "development",
-		// email_regex: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-		// min_password_length: 12,
+		email_regex: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+		min_password_length: 12,
 		// password_reset_expiry_minutes: 15,
 		auth_bypass_routes: ["/v1/fixed/auth/login", "/v1/fixed/auth/register"],
 		rate_limit: {
@@ -218,11 +223,97 @@ new Elysia()
 		};
 	})
 	.group("/v1/fixed", (app) =>
-		app.get("/health", () => {
-			return {
-				status: "ok",
-			};
-		}),
+		app
+			.get("/health", () => {
+				return {
+					status: "ok",
+				};
+			})
+			.post(
+				"/register",
+				async ({ body, set, store }): Promise<ApiResponse<SanitizedUser>> => {
+					const { email, password, fullName } = body;
+
+					if (!email || !store.email_regex.test(email)) {
+						set.status = 400;
+						return {
+							success: false,
+							error: "Invalid email",
+							code: 400,
+							message: "Invalid email",
+						};
+					}
+
+					if (!password || password.length < store.min_password_length) {
+						set.status = 400;
+						return {
+							success: false,
+							error: "Invalid password",
+							code: 400,
+							message: "Invalid password",
+						};
+					}
+
+					const pg = new PostgreSQLManager();
+
+					const existing = await findUserByEmail(email, pg);
+
+					if (!existing.success) {
+						set.status = 500;
+						return {
+							error: "DB error",
+							code: 500,
+							success: false,
+							message: "Error while checking user",
+						};
+					}
+
+					if (existing.data) {
+						set.status = 409;
+						return {
+							error: "Email already exists",
+							code: 409,
+							success: false,
+							message: "Email already exists",
+						};
+					}
+
+					const userId = randomUUID();
+
+					const { hash } = generatePasswordHash({ password });
+
+					const insertResult = await pg.execute(INSERT_USER, [
+						userId,
+						email.toLowerCase().trim(),
+						hash,
+						fullName ?? null,
+					]);
+
+					if (!insertResult.success) {
+						set.status = 500;
+						return {
+							error: "DB error",
+							code: 500,
+							success: false,
+							message: "Error while creating user",
+						};
+					}
+
+					return {
+						data: sanitizeUser(insertResult.data[0] as DbUserRow),
+						success: true,
+						code: 201,
+						message: "User created successfully",
+					};
+				},
+				{
+					body: t.Object({
+						email: t.String(),
+						password: t.String(),
+						fullName: t.String(),
+					}),
+				},
+			),
 	)
 	.group("/v1/vulnarable", (app) =>
 		app.get("/health", () => {

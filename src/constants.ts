@@ -31,3 +31,10 @@ export const INSERT_DEMO_PG_TEST_TABLE = `INSERT INTO demo_pg_test (value) VALUE
 export const SELECT_DEMO_PG_TEST_TABLE = `SELECT id, value FROM demo_pg_test WHERE id = $1`;
 export const UPDATE_DEMO_PG_TEST_TABLE = `UPDATE demo_pg_test SET value = $1 WHERE id = $2 RETURNING id, value`;
 export const DELETE_DEMO_PG_TEST_TABLE = `DELETE FROM demo_pg_test WHERE id = $1`;
+
+export const INSERT_USER = `INSERT INTO auth_users (id, email, password_hash, full_name)
+					 VALUES ($1, $2, $3, $4)
+					 RETURNING id, email, full_name, created_at, updated_at`;
+
+export const SELECT_USER_BY_EMAIL = `SELECT * FROM auth_users WHERE email = $1 LIMIT 1`;
+export const SELECT_USER_BY_ID = `SELECT * FROM auth_users WHERE id = $1 LIMIT 1`;

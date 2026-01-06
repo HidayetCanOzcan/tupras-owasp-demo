@@ -87,6 +87,7 @@ export class PostgreSQLManager {
 			const result = await this.pool.query<T>(sql, params);
 			return { success: true, data: result.rows };
 		} catch (error) {
+			console.error("PostgreSQL error:", error);
 			return { success: false, error: (error as Error).message };
 		}
 	}
