@@ -1,6 +1,15 @@
 import { Elysia } from "elysia";
 import { PostgreSQLManager, RedisManager } from "./Managers";
-import { CREATE_AUTH_USER, CREATE_PASSWORD_RESET_TOKENS } from "./constants";
+import {
+	CREATE_AUTH_USER,
+	CREATE_DEMO_PG_TEST_TABLE,
+	CREATE_PASSWORD_RESET_TOKENS,
+	DELETE_DEMO_PG_TEST_TABLE,
+	INSERT_DEMO_PG_TEST_TABLE,
+	SELECT_DEMO_PG_TEST_TABLE,
+	UPDATE_DEMO_PG_TEST_TABLE,
+} from "./constants";
+import { randomUUID } from "node:crypto";
 
 new Elysia()
 	.state({
@@ -65,9 +74,101 @@ new Elysia()
 				console.error("Failed to create tables");
 			}
 		}
-
 		const redisManager = new RedisManager({ ...store.redisConfig });
 		const redisResult = await redisManager.exists("healthcheck");
 		console.log("Redis connection test:", redisResult);
+	})
+	.onRequest(async ({ request, store }) => {
+		const url = new URL(request.url);
+		const pathname = url.pathname;
+		const method = request.method;
+		const query = url.search;
+		const userId = request.headers.get("x-user-id") || "anonymous";
+		const sessionId = request.headers.get("x-session-id") || "none";
+		const clientIp =
+			request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+			request.headers.get("x-real-ip")?.trim() ||
+			"unknown";
+		const userAgent = request.headers.get("user-agent") || "unknown";
+
+		const auditLog = {
+			timestamp: new Date().toISOString(),
+			pathname,
+			method,
+			query,
+			userId,
+			sessionId,
+			clientIp,
+			userAgent,
+		};
+
+		const redis = new RedisManager();
+		const auditKey = `audit:${Date.now()}:${randomUUID}`;
+		await redis.create(auditKey, auditLog);
+
+		if (store.environment === "development") {
+			console.log("Audit log:", auditLog);
+		}
+	})
+	.get("/redis/test", async ({ store }) => {
+		const redisManager = new RedisManager();
+		const key = store.redisKeys.test;
+
+		const createResult = await redisManager.create(key, {
+			value: "lorem ipsum",
+		});
+		const readResult = await redisManager.read<{ value: string }>(key);
+		const updateResult = await redisManager.update(key, { value: "dolor sit" });
+		const updatedResult = await redisManager.read<{ value: string }>(key);
+		const deleteResult = await redisManager.remove(key);
+		const existResult = await redisManager.exists(key);
+
+		return {
+			create: createResult,
+			read: readResult,
+			update: updateResult,
+			updated: updatedResult,
+			delete: deleteResult,
+			exist: existResult,
+		};
+	})
+	.get("/postgre/test", async () => {
+		const pgManager = new PostgreSQLManager();
+		const ensureTable = await pgManager.execute(CREATE_DEMO_PG_TEST_TABLE);
+
+		if (!ensureTable.success) {
+			return {
+				success: false,
+				error: "Failed to create table",
+			};
+		}
+
+		const insertResult = await pgManager.execute(INSERT_DEMO_PG_TEST_TABLE, [
+			"test",
+		]);
+		const insertedId = insertResult.success ? insertResult.data[0].id : null;
+
+		const readResult = await pgManager.execute(SELECT_DEMO_PG_TEST_TABLE, [
+			insertedId,
+		]);
+
+		const updateResult = await pgManager.execute(UPDATE_DEMO_PG_TEST_TABLE, [
+			"updated",
+			insertedId,
+		]);
+		const updatedResult = await pgManager.execute(SELECT_DEMO_PG_TEST_TABLE, [
+			insertedId,
+		]);
+		const deleteResult = await pgManager.execute(DELETE_DEMO_PG_TEST_TABLE, [
+			insertedId,
+		]);
+
+		return {
+			insert: insertResult,
+			read: readResult,
+			update: updateResult,
+			updated: updatedResult,
+			delete: deleteResult,
+		};
 	})
 	.listen(3000);
