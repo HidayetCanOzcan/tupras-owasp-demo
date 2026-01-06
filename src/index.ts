@@ -11,10 +11,24 @@ import {
 	UPDATE_DEMO_PG_TEST_TABLE,
 } from "./constants";
 import { PostgreSQLManager, RedisManager } from "./Managers";
-import { generatePasswordHash, issueSession } from "./Service/AuthService";
-import { findUserByEmail, sanitizeUser } from "./Service/UserService";
+import {
+	deleteRefreshToken,
+	deleteSession,
+	generatePasswordHash,
+	issueSession,
+	readRefreshToken,
+	readSession,
+	signJWT,
+	verifyJWT,
+} from "./Service/AuthService";
+import {
+	findByUserId,
+	findUserByEmail,
+	sanitizeUser,
+} from "./Service/UserService";
 import type { DbUserRow, SanitizedUser } from "./Service/UserService/types";
 import type { ApiResponse } from "./types";
+import { validatePassword } from "./Service/AuthService/Password/Validate";
 
 new Elysia()
 	.state({
@@ -53,15 +67,15 @@ new Elysia()
 		email_regex: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
 		min_password_length: 12,
 		// password_reset_expiry_minutes: 15,
-		auth_bypass_routes: ["/v1/fixed/auth/login", "/v1/fixed/auth/register"],
+		auth_bypass_routes: ["/v1/fixed/login", "/v1/fixed/register"],
 		rate_limit: {
 			window_seconds: 60,
 			max_requests: 100,
 			auth_max_requests: 5,
 			auth_routes: [
-				"/v1/fixed/auth/login",
-				"/v1/fixed/auth/register",
-				"/v1/fixed/auth/change-password",
+				"/v1/fixed/login",
+				"/v1/fixed/register",
+				"/v1/fixed/change-password",
 			],
 		},
 	})
@@ -111,6 +125,10 @@ new Elysia()
 
 		const session_id = cookies[store.cookie_names.session];
 
+		if (store.auth_bypass_routes.includes(pathname)) {
+			return;
+		}
+
 		if (!session_id) {
 			set.status = 401;
 			return {
@@ -120,11 +138,71 @@ new Elysia()
 			};
 		}
 
-		console.log({
-			session_id,
-			accessToken,
-			refreshToken,
+		const sessionData = await readSession({ sessionId: session_id });
+
+		if (!sessionData) {
+			set.status = 401;
+			return {
+				error: "Unauthorized",
+				success: false,
+				code: 401,
+			};
+		}
+
+		const jwtResult = accessToken
+			? verifyJWT(accessToken, store.jwt.secret)
+			: null;
+
+		const accessTokenValid = jwtResult?.valid === true;
+
+		const refreshTokenData = await readRefreshToken({
+			token: refreshToken || ",",
+			jwtSecret: store.jwt.secret,
 		});
+
+		const refreshTokenValid =
+			refreshTokenData?.success && refreshTokenData.record;
+
+		if (!accessTokenValid && refreshTokenValid) {
+			const newAccessToken = signJWT(
+				{
+					subject: sessionData.userId,
+					expiresInSeconds: store.jwt.accessTokenTtlSeconds,
+					issuer: "auth",
+					audience: "api",
+					sessionId: session_id,
+					customClaims: {
+						refreshTokenId: refreshTokenData.record?.token,
+					},
+				},
+				store.jwt.secret,
+			);
+
+			accessToken = newAccessToken;
+
+			const cookieValue = `${store.cookie_names.accessToken}=${accessToken}; Path=/; HttpOnly; SameSite=Lax`;
+
+			set.headers["Set-Cookie"] = cookieValue;
+		}
+
+		const _user_id_ =
+			accessTokenValid && jwtResult.valid
+				? jwtResult.payload.sub
+				: sessionData.userId;
+
+		request.headers.set("x-access-token", accessToken);
+		request.headers.set("x-refresh-token", refreshToken || "");
+		request.headers.set("x-session-id", session_id);
+		request.headers.set("x-user-id", _user_id_ || "");
+
+		if (!accessTokenValid || !refreshTokenValid) {
+			set.status = 401;
+			return {
+				error: "Unauthorized",
+				success: false,
+				code: 401,
+			};
+		}
 
 		const userId = request.headers.get("x-user-id") || "anonymous";
 		const sessionId = request.headers.get("x-session-id") || "none";
@@ -263,6 +341,39 @@ new Elysia()
 					status: "ok",
 				};
 			})
+			.get("/me", async ({ request, set }) => {
+				const userId = request.headers.get("x-user-id");
+				if (!userId) {
+					set.status = 500;
+					return {
+						success: false,
+						error: "Internal server error",
+						code: 500,
+						message: "Internal server error",
+					};
+				}
+
+				const pg = new PostgreSQLManager();
+				const userResult = await findByUserId(userId, pg);
+
+				if (!userResult.success || !userResult.data) {
+					set.status = 404;
+					return {
+						success: false,
+						error: "User not found",
+						code: 404,
+						message: "User not found",
+					};
+				}
+
+				set.status = 200;
+
+				return {
+					success: true,
+					code: 200,
+					data: sanitizeUser(userResult.data),
+				};
+			})
 			.post(
 				"/register",
 				async ({ body, set, store }): Promise<ApiResponse<SanitizedUser>> => {
@@ -378,6 +489,132 @@ new Elysia()
 						password: t.String(),
 						fullName: t.String(),
 					}),
+				},
+			)
+			.post(
+				"/login",
+				async ({ body, set, store }) => {
+					const { email, password } = body;
+
+					if (!email || !password) {
+						set.status = 400;
+						return {
+							error: "Bad request",
+							code: 400,
+							success: false,
+							message: "Email and password are required",
+						};
+					}
+
+					const pg = new PostgreSQLManager();
+					const userResult = await findUserByEmail(email, pg);
+
+					if (!userResult.success) {
+						set.status = 500;
+						return {
+							error: "Db error",
+							code: 500,
+							success: false,
+							message: "Database error",
+						};
+					}
+
+					if (!userResult.data) {
+						set.status = 401;
+						return {
+							error: "Unauthorized",
+							code: 401,
+							success: false,
+							message: "Invalid credentials",
+						};
+					}
+
+					const passwordValid = validatePassword({
+						password,
+						hash: userResult.data.password_hash,
+					});
+
+					if (!passwordValid) {
+						set.status = 401;
+						return {
+							error: "Unauthorized",
+							code: 401,
+							success: false,
+							message: "Invalid credentials",
+						};
+					}
+
+					const tokens = await issueSession({
+						userId: userResult.data.id,
+						jwtSecret: store.jwt.secret,
+					});
+
+					if (!tokens.success) {
+						set.status = 500;
+						return {
+							error: "Token error",
+							code: 500,
+							success: false,
+							message: "Token error",
+						};
+					}
+
+					set.cookie = {
+						[store.cookie_names.accessToken]: {
+							value: tokens.data.accessToken,
+							...store.cookie_settings,
+						},
+						[store.cookie_names.refreshToken]: {
+							value: tokens.data.refreshToken,
+							...store.cookie_settings,
+						},
+						[store.cookie_names.session]: {
+							value: tokens.data.sessionId,
+							...store.cookie_settings,
+						},
+					};
+
+					return {
+						data: sanitizeUser(userResult.data),
+						success: true,
+						code: 200,
+						message: "User logged in successfully",
+					};
+				},
+				{
+					body: t.Object({
+						email: t.String(),
+						password: t.String(),
+					}),
+				},
+			)
+			.post(
+				"/logout",
+				async ({ request, set }) => {
+					const refreshToken = request.headers.get("x-refresh-token");
+					const sessionId = request.headers.get("x-session-id");
+
+					if (!refreshToken || !sessionId) {
+						set.status = 400;
+						return {
+							error: "Bad request",
+							code: 400,
+							success: false,
+							message: "Missing refresh token or session id",
+						};
+					}
+
+					await deleteRefreshToken({ token: refreshToken });
+					await deleteSession({ sessionId });
+
+					return {
+						success: true,
+						code: 200,
+						message: "User logged out successfully",
+					};
+				},
+				{
+					body: t.Undefined(),
 				},
 			),
 	)
