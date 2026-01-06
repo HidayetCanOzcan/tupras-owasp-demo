@@ -171,4 +171,18 @@ new Elysia()
 			delete: deleteResult,
 		};
 	})
+	.group("/v1/fixed", (app) =>
+		app.get("/health", () => {
+			return {
+				status: "ok",
+			};
+		}),
+	)
+	.group("/v1/vulnarable", (app) =>
+		app.get("/health", () => {
+			return {
+				status: "ok",
+			};
+		}),
+	)
 	.listen(3000);
