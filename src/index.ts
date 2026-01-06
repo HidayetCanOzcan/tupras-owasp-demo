@@ -88,6 +88,44 @@ new Elysia()
 		const pathname = url.pathname;
 		const method = request.method;
 		const query = url.search;
+
+		const cookies = (request.headers.get("cookie")?.split(";") || []).reduce<
+			Record<string, string>
+		>((acc, cookie) => {
+			const [key, value] = cookie.trim().split("=");
+			if (key && value) {
+				acc[key] = value;
+			}
+			return acc;
+		}, {});
+
+		let accessToken = cookies[store.cookie_names.accessToken];
+		const refreshToken = cookies[store.cookie_names.refreshToken];
+
+		if (!accessToken && !refreshToken) {
+			const bearer = request.headers.get("authorization")?.split(" ")[1];
+			if (bearer) {
+				accessToken = bearer;
+			}
+		}
+
+		const session_id = cookies[store.cookie_names.session];
+
+		if (!session_id) {
+			set.status = 401;
+			return {
+				error: "Unauthorized",
+				success: false,
+				code: 401,
+			};
+		}
+
+		console.log({
+			session_id,
+			accessToken,
+			refreshToken,
+		});
+
 		const userId = request.headers.get("x-user-id") || "anonymous";
 		const sessionId = request.headers.get("x-session-id") || "none";
 		const clientIp =
