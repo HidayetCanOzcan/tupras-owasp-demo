@@ -955,6 +955,138 @@ new Elysia()
 						code: 500,
 					};
 				}
-			}),
+			})
+			.post(
+				"/auth/register",
+				async ({ body, set, store }) => {
+					const { email, password, fullName } = body;
+
+					// VULNERABILITY 1: No email validation
+					// Accepts any string as email
+
+					// VULNERABILITY 2: No password policy
+					// Accepts passwords like "123" or "a"
+					if (!password) {
+						set.status = 400;
+						return {
+							error: "Password required",
+							success: false,
+							code: 400,
+						};
+					}
+
+					const pg = new PostgreSQLManager();
+
+					// VULNERABILITY 3: User enumeration
+					// Explicitly tells attacker if email exists
+					const existing = await findUserByEmail(email, pg);
+					if (!existing.success) {
+						set.status = 500;
+						// VULNERABILITY 4: Verbose error with internal details
+						return {
+							error: "Database connection failed",
+							message: `PostgreSQL error: ${existing.error}`,
+							debug: {
+								host: process.env.PG_HOST,
+								database: process.env.PG_DATABASE,
+								timestamp: new Date().toISOString(),
+							},
+							success: false,
+							code: 500,
+						};
+					}
+					if (existing.data) {
+						set.status = 409;
+						// VULNERABILITY 3: Clear user enumeration
+						return {
+							error: "Email already registered",
+							message: `The email ${email} is already in use since ${existing.data.created_at}`,
+							success: false,
+							code: 409,
+						};
+					}
+
+					const userId = randomUUID();
+
+					// VULNERABILITY 5: Weak password hashing (MD5)
+					const crypto = await import("node:crypto");
+					const weakHash = crypto
+						.createHash("md5")
+						.update(password)
+						.digest("hex");
+
+					// VULNERABILITY 6: SQL Injection in INSERT
+					// String concatenation instead of parameterized query
+					const insertQuery = `
+						INSERT INTO auth_users (id, email, password_hash, full_name)
+						VALUES ('${userId}', '${email}', '${weakHash}', '${fullName ?? ""}')
+						RETURNING id, email, full_name, created_at, updated_at
+					`;
+
+					const insertResult = await pg.execute(insertQuery);
+
+					if (!insertResult.success) {
+						set.status = 500;
+						// VULNERABILITY 4: Leaking SQL error details
+						return {
+							error: "Failed to create user",
+							message: `SQL Error: ${insertResult.error}`,
+							query: insertQuery, // VULNERABILITY 7: Exposing SQL query
+							success: false,
+							code: 500,
+						};
+					}
+
+					const tokens = await issueSession({
+						userId,
+						jwtSecret: store.jwt.secret,
+					});
+
+					if (!tokens.success) {
+						set.status = 500;
+						return {
+							error: "Failed to create session",
+							success: false,
+							code: 500,
+						};
+					}
+
+					set.status = 201;
+
+					set.cookie = {
+						[store.cookie_names.accessToken]: {
+							value: tokens.data.accessToken,
+							...store.cookie_settings,
+						},
+						[store.cookie_names.refreshToken]: {
+							value: tokens.data.refreshToken,
+							...store.cookie_settings,
+						},
+						[store.cookie_names.session]: {
+							value: tokens.data.sessionId,
+							...store.cookie_settings,
+						},
+					};
+
+					return {
+						data: sanitizeUser(insertResult.data[0] as DbUserRow),
+						// VULNERABILITY 8: Exposing sensitive info in response
+						debug: {
+							passwordHash: weakHash,
+							hashAlgorithm: "MD5",
+							jwtSecret: `${store.jwt.secret.substring(0, 10)}...`,
+						},
+						success: true,
+						code: 201,
+					};
+				},
+				{
+					body: t.Object({
+						email: t.String(),
+						password: t.String(),
+						fullName: t.Optional(t.String()),
+					}),
+				},
+			),
 	)
 	.listen(3000);
