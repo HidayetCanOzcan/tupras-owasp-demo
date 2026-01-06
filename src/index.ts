@@ -11,7 +11,7 @@ import {
 	UPDATE_DEMO_PG_TEST_TABLE,
 } from "./constants";
 import { PostgreSQLManager, RedisManager } from "./Managers";
-import { generatePasswordHash } from "./Service/AuthService";
+import { generatePasswordHash, issueSession } from "./Service/AuthService";
 import { findUserByEmail, sanitizeUser } from "./Service/UserService";
 import type { DbUserRow, SanitizedUser } from "./Service/UserService/types";
 import type { ApiResponse } from "./types";
@@ -33,22 +33,22 @@ new Elysia()
 			port: 5432,
 			connectionTimeoutMillis: 3_000,
 		},
-		// jwt: {
-		// 	secret: "super-secret-key-change-in-production",
-		// 	accessTokenTtlSeconds: 15 * 60,
-		// 	algorithm: "HS256" as const,
-		// },
-		// cookie_names: {
-		// 	accessToken: "access_token",
-		// 	refreshToken: "refresh_token",
-		// 	session: "session_id",
-		// },
-		// cookie_settings: {
-		// 	httpOnly: true,
-		// 	secure: true,
-		// 	sameSite: "strict" as const,
-		// 	path: "/",
-		// },
+		jwt: {
+			secret: "super-secret-key-change-in-production",
+			accessTokenTtlSeconds: 15 * 60,
+			algorithm: "HS256" as const,
+		},
+		cookie_names: {
+			accessToken: "access_token",
+			refreshToken: "refresh_token",
+			session: "session_id",
+		},
+		cookie_settings: {
+			httpOnly: true,
+			secure: true,
+			sameSite: "strict" as const,
+			path: "/",
+		},
 		environment: "development",
 		email_regex: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
 		min_password_length: 12,
@@ -294,6 +294,38 @@ new Elysia()
 							message: "Error while creating user",
 						};
 					}
+
+					const tokens = await issueSession({
+						userId: userId,
+						jwtSecret: store.jwt.secret,
+					});
+
+					if (!tokens.success) {
+						set.status = 500;
+						return {
+							error: "Token generation failed",
+							code: 500,
+							success: false,
+							message: "Token generation failed",
+						};
+					}
+
+					set.status = 201;
+
+					set.cookie = {
+						[store.cookie_names.accessToken]: {
+							value: tokens.data.accessToken,
+							...store.cookie_settings,
+						},
+						[store.cookie_names.refreshToken]: {
+							value: tokens.data.refreshToken,
+							...store.cookie_settings,
+						},
+						[store.cookie_names.session]: {
+							value: tokens.data.sessionId,
+							...store.cookie_settings,
+						},
+					};
 
 					return {
 						data: sanitizeUser(insertResult.data[0] as DbUserRow),
