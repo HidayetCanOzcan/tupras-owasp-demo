@@ -1,5 +1,5 @@
+import { generateDeviceFingerprint } from "../Generate";
 import type {
-	DeviceFingerprintInput,
 	ValidateFingerprintParams,
 	ValidateFingerprintResult,
 } from "../types";
@@ -14,10 +14,10 @@ export const validateDeviceFingerprint = ({
 	const forwardedFor =
 		extractHeaderValue(headers, "x-forwarded-for") ?? requestIp ?? undefined;
 
-	const currentFingerprint: DeviceFingerprintInput = {
+	const currentFingerprint = generateDeviceFingerprint({
 		userAgent,
 		ipAddress: forwardedFor,
-	};
+	});
 
 	const componentMismatch = [
 		{
@@ -36,18 +36,12 @@ export const validateDeviceFingerprint = ({
 		return {
 			isValid: false,
 			reason: `${componentMismatch.field} mismatch`,
-			currentFingerprint: {
-				hash: "",
-				components: currentFingerprint,
-			},
+			currentFingerprint,
 		};
 	}
 
 	return {
 		isValid: true,
-		currentFingerprint: {
-			hash: "",
-			components: currentFingerprint,
-		},
+		currentFingerprint,
 	};
 };

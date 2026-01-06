@@ -1,5 +1,5 @@
-import { verifyJWT } from "../../JWT";
 import { validateDeviceFingerprint } from "../../Fingerprint/Validate";
+import { verifyJWT } from "../../JWT";
 import { readSession } from "../Read";
 import type { ValidateSessionOptions, ValidateSessionResult } from "../types";
 

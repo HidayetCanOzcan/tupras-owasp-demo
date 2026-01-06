@@ -1,7 +1,7 @@
+import { signJWT } from "../../JWT";
 import { generateRefreshToken } from "../../RefreshToken/Generate";
 import { deleteSession } from "../../SessionStore/Delete";
 import { generateSession } from "../../SessionStore/Generate";
-import { signJWT } from "../../JWT";
 import type { IssueSessionOptions, IssueSessionResult } from "../types";
 
 const DEFAULT_ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
