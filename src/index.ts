@@ -374,6 +374,107 @@ new Elysia()
 					data: sanitizeUser(userResult.data),
 				};
 			})
+			.get("/admin/audit-logs", async ({ request, set }) => {
+				const userId = request.headers.get("x-user-id");
+				if (!userId) {
+					set.status = 500;
+					return {
+						success: false,
+						error: "Internal server error",
+						code: 500,
+						message: "Internal server error",
+					};
+				}
+
+				const pg = new PostgreSQLManager();
+				const userResult = await findByUserId(userId, pg);
+				if (!userResult.success || !userResult.data) {
+					set.status = 401;
+					return {
+						success: false,
+						error: "Unauthorized",
+						code: 401,
+						message: "Unauthorized",
+					};
+				}
+
+				if (userResult.data.role !== "admin") {
+					set.status = 403;
+					return {
+						success: false,
+						error: "Forbidden",
+						code: 403,
+						message: "Forbidden",
+					};
+				}
+
+				const redis = new RedisManager();
+				const keys = await redis.keys("aduidt:*");
+
+				type AuditLog = {
+					id: string;
+					user_id: string;
+					action: string;
+					ip_address: string;
+					user_agent: string;
+					created_at: string;
+					timestamp: number;
+				};
+
+				const logs: AuditLog[] = [];
+
+				for (const key of keys.slice(0, 100)) {
+					const result = await redis.read<AuditLog>(key);
+					if (result.success && result.data) {
+						logs.push(result.data);
+					}
+				}
+
+				logs.sort((a, b) => {
+					return (
+						new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+					);
+				});
+
+				set.status = 200;
+				return {
+					success: true,
+					code: 200,
+					data: logs,
+				};
+			})
+			.get("/users/search", async ({ query, set }) => {
+				const { search } = query;
+				if (!search || search.length < 2) {
+					set.status = 400;
+					return {
+						success: false,
+						error: "Invalid search query",
+						code: 400,
+						message: "Invalid search query",
+					};
+				}
+				const pg = new PostgreSQLManager();
+				const result = await pg.execute(
+					"SELECT id, email, full_name, role FROM auth_users WHERE email ILIKE $1 OR full_name ILIKE $1",
+					[`%${search}%`],
+				);
+				if (!result.success) {
+					set.status = 500;
+					return {
+						success: false,
+						error: "Internal server error",
+						code: 500,
+						message: "Internal server error",
+					};
+				}
+				set.status = 200;
+				return {
+					success: true,
+					code: 200,
+					data: result.data,
+				};
+			})
 			.post(
 				"/register",
 				async ({ body, set, store }): Promise<ApiResponse<SanitizedUser>> => {
@@ -616,13 +717,244 @@ new Elysia()
 				{
 					body: t.Undefined(),
 				},
+			)
+			.get(
+				"/fetch-url",
+				async ({ query, set }) => {
+					const { url } = query;
+
+					if (!url) {
+						set.status = 400;
+						return { error: "URL required", success: false, code: 400 };
+					}
+
+					const allowedDomains = [
+						"api.github.com",
+						"jsonplaceholder.typicode.com",
+						"httpbin.org",
+					];
+
+					let parsedUrl: URL;
+					try {
+						parsedUrl = new URL(url);
+					} catch {
+						set.status = 400;
+						return { error: "Invalid URL format", success: false, code: 400 };
+					}
+
+					if (parsedUrl.protocol !== "https:") {
+						set.status = 400;
+						return {
+							error: "Only HTTPS URLs allowed",
+							success: false,
+							code: 400,
+						};
+					}
+
+					if (!allowedDomains.includes(parsedUrl.hostname)) {
+						set.status = 400;
+						return {
+							error: "Domain not in allowlist",
+							success: false,
+							code: 400,
+						};
+					}
+
+					const privateIpPatterns = [
+						/^localhost$/i,
+						/^127\./,
+						/^10\./,
+						/^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+						/^192\.168\./,
+						/^0\./,
+						/^169\.254\./,
+						/^::1$/,
+						/^fc00:/i,
+						/^fe80:/i,
+					];
+
+					if (privateIpPatterns.some((p) => p.test(parsedUrl.hostname))) {
+						set.status = 400;
+						return {
+							error: "Private/internal addresses not allowed",
+							success: false,
+							code: 400,
+						};
+					}
+
+					try {
+						const controller = new AbortController();
+						const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+						const response = await fetch(url, {
+							signal: controller.signal,
+							redirect: "error",
+						});
+
+						clearTimeout(timeoutId);
+
+						const contentType = response.headers.get("content-type") || "";
+						let data: string | object;
+
+						if (contentType.includes("application/json")) {
+							data = await response.json();
+						} else {
+							const text = await response.text();
+							data = text.slice(0, 10000);
+						}
+
+						return {
+							success: true,
+							data,
+							status: response.status,
+							code: 200,
+						};
+					} catch (_error) {
+						set.status = 500;
+						return {
+							success: false,
+							error: "Failed to fetch URL",
+							code: 500,
+						};
+					}
+				},
+				{
+					query: t.Object({
+						url: t.String(),
+					}),
+				},
 			),
 	)
 	.group("/v1/vulnarable", (app) =>
-		app.get("/health", () => {
-			return {
-				status: "ok",
-			};
-		}),
+		app
+			.get("/health", () => {
+				return {
+					status: "ok",
+				};
+			})
+			.get("/admin/audit-logs", async ({ request, set }) => {
+				const userId = request.headers.get("x-user-id");
+				if (!userId) {
+					set.status = 500;
+					return {
+						success: false,
+						error: "Internal server error",
+						code: 500,
+						message: "Internal server error",
+					};
+				}
+
+				const pg = new PostgreSQLManager();
+				const userResult = await findByUserId(userId, pg);
+				if (!userResult.success || !userResult.data) {
+					set.status = 401;
+					return {
+						success: false,
+						error: "Unauthorized",
+						code: 401,
+						message: "Unauthorized",
+					};
+				}
+
+				const redis = new RedisManager();
+				const keys = await redis.keys("aduidt:*");
+
+				type AuditLog = {
+					id: string;
+					user_id: string;
+					action: string;
+					ip_address: string;
+					user_agent: string;
+					created_at: string;
+					timestamp: number;
+				};
+
+				const logs: AuditLog[] = [];
+
+				for (const key of keys.slice(0, 100)) {
+					const result = await redis.read<AuditLog>(key);
+					if (result.success && result.data) {
+						logs.push(result.data);
+					}
+				}
+
+				logs.sort((a, b) => {
+					return (
+						new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+					);
+				});
+
+				set.status = 200;
+				return {
+					success: true,
+					code: 200,
+					data: logs,
+				};
+			})
+			.get("/users/search", async ({ query, set }) => {
+				const { search } = query;
+				if (!search || search.length < 2) {
+					set.status = 400;
+					return {
+						success: false,
+						error: "Invalid search query",
+						code: 400,
+						message: "Invalid search query",
+					};
+				}
+				const pg = new PostgreSQLManager();
+				const result = await pg.execute(
+					`SELECT id, email, full_name, role FROM auth_users WHERE email LIKE '%${search}%' OR full_name LIKE '%${search}%'`,
+				);
+				if (!result.success) {
+					set.status = 500;
+					return {
+						success: false,
+						error: "Internal server error",
+						code: 500,
+						message: "Internal server error",
+					};
+				}
+				set.status = 200;
+				return {
+					success: true,
+					code: 200,
+					data: result.data,
+				};
+			})
+			.get("/fetch-url", async ({ query, set }) => {
+				const { url } = query;
+
+				if (!url) {
+					set.status = 400;
+					return { error: "URL required", success: false, code: 400 };
+				}
+
+				try {
+					const response = await fetch(url);
+					const contentType = response.headers.get("content-type") || "";
+					let data: string | object;
+
+					if (contentType.includes("application/json")) {
+						data = await response.json();
+					} else {
+						data = await response.text();
+					}
+
+					return {
+						success: true,
+						data,
+						headers: Object.fromEntries(response.headers.entries()),
+						status: response.status,
+						code: 200,
+					};
+				} catch (error) {
+					return {
+						success: false,
+						error: (error as Error).message,
+						code: 500,
+					};
+				}
+			}),
 	)
 	.listen(3000);
