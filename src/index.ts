@@ -1,5 +1,6 @@
 import { Elysia } from "elysia";
 import { PostgreSQLManager, RedisManager } from "./Managers";
+import { CREATE_AUTH_USER, CREATE_PASSWORD_RESET_TOKENS } from "./constants";
 
 new Elysia()
 	.state({
@@ -54,19 +55,19 @@ new Elysia()
 		const config = store.postgres;
 
 		const pgManager = new PostgreSQLManager({ ...config });
-		try {
-			const result = await pgManager.execute("SELECT current_database() as db");
-			console.log("Database connection test:", result);
-		} catch (error) {
-			console.error("Database connection failed:", error);
+		const result = await pgManager.execute("SELECT current_database() as db");
+		if (result.success) {
+			const create_user_table = await pgManager.execute(CREATE_AUTH_USER);
+			const create_password_reset_table = await pgManager.execute(
+				CREATE_PASSWORD_RESET_TOKENS,
+			);
+			if (!create_user_table.success || !create_password_reset_table.success) {
+				console.error("Failed to create tables");
+			}
 		}
 
 		const redisManager = new RedisManager({ ...store.redisConfig });
-		try {
-			const result = await redisManager.exists("healthcheck");
-			console.log("Redis connection test:", result);
-		} catch (error) {
-			console.error("Redis connection failed:", error);
-		}
+		const redisResult = await redisManager.exists("healthcheck");
+		console.log("Redis connection test:", redisResult);
 	})
 	.listen(3000);
