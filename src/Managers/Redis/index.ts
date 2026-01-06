@@ -53,9 +53,15 @@ export class RedisManager {
 		RedisManager.instance = this;
 	}
 
-	async create<T>(key: string, value: T): Promise<RedisResult<"OK">> {
+	async create<T>(
+		key: string,
+		value: T,
+		ttlSeconds?: number,
+	): Promise<RedisResult<"OK">> {
 		try {
-			const result = await this.client.set(key, JSON.stringify(value));
+			const result = ttlSeconds
+				? await this.client.set(key, JSON.stringify(value), "EX", ttlSeconds)
+				: await this.client.set(key, JSON.stringify(value));
 			return { success: true, data: result };
 		} catch (error) {
 			return { success: false, error: (error as Error).message };
@@ -74,8 +80,19 @@ export class RedisManager {
 		}
 	}
 
-	async update<T>(key: string, value: T): Promise<RedisResult<"OK">> {
-		return this.create(key, value);
+	async update<T>(
+		key: string,
+		value: T,
+		preserveTtl = true,
+	): Promise<RedisResult<"OK">> {
+		try {
+			const result = preserveTtl
+				? await this.client.set(key, JSON.stringify(value), "KEEPTTL")
+				: await this.client.set(key, JSON.stringify(value));
+			return { success: true, data: result };
+		} catch (error) {
+			return { success: false, error: (error as Error).message };
+		}
 	}
 
 	async remove(key: string): Promise<RedisResult<number>> {

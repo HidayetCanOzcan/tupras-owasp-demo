@@ -11,10 +11,10 @@ import {
 	UPDATE_DEMO_PG_TEST_TABLE,
 } from "./constants";
 import { PostgreSQLManager, RedisManager } from "./Managers";
-import type { ApiResponse } from "./types";
-import type { DbUserRow, SanitizedUser } from "./Service/UserService/types";
-import { findUserByEmail, sanitizeUser } from "./Service/UserService";
 import { generatePasswordHash } from "./Service/AuthService";
+import { findUserByEmail, sanitizeUser } from "./Service/UserService";
+import type { DbUserRow, SanitizedUser } from "./Service/UserService/types";
+import type { ApiResponse } from "./types";
 
 new Elysia()
 	.state({
@@ -147,11 +147,7 @@ new Elysia()
 		}
 
 		if (count === 0) {
-			await redis.create(rateLimitKey, 1);
-			await redis.acquireLock(
-				`${rateLimitKey}:ttl`,
-				store.rate_limit.window_seconds,
-			);
+			await redis.create(rateLimitKey, 1, store.rate_limit.window_seconds);
 		} else {
 			await redis.update(rateLimitKey, count + 1);
 		}
